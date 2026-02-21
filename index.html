@@ -52,6 +52,13 @@ const GRID_ROWS = 5;
 const TOTAL_WAVES = 5;
 const CAMP_COL = 2;
 const CAMP_ROW = 2;
+const MAX_LEVEL = 3;
+// Upgrade costs per level (level 1→2, 2→3)
+const UPGRADE_COSTS = [0, 20, 40]; // index = current level, value = cost to upgrade
+// Stat multipliers per level [level1, level2, level3]
+const LEVEL_DAMAGE_MULT  = [1, 1.5, 2.0];
+const LEVEL_RANGE_MULT   = [1, 1.15, 1.3];
+const LEVEL_ASPD_MULT    = [1, 1.2, 1.4];
 
 // --- Isometric coordinate helpers ---
 // Grid center on screen
@@ -127,6 +134,7 @@ let waveEnemiesTotal = 0;
 let gameSpeed = 1;
 let gameState = 'playing'; // 'playing', 'won', 'lost'
 let selectedDefender = null;
+let selectedPlacedDefender = null; // index into defenders[] for upgrade UI
 let enemies = [];
 let defenders = [];
 let projectiles = [];
@@ -142,6 +150,12 @@ const DEFENDER_TYPES = [
   { id: 'mage',     name: '法师',   cost: 60,  color: '#66f',  range: 100, damage: 12, attackSpeed: 0.7, emoji: '🔮', desc: '范围伤害' },
   { id: 'healer',   name: '雪人',   cost: 40,  color: '#aef',  range: 90,  damage: 5,  attackSpeed: 0.5, emoji: '⛄', desc: '减速敌人' },
 ];
+
+// Get effective stats for a defender considering its level
+function getDefDamage(d) { return d.type.damage * LEVEL_DAMAGE_MULT[d.level - 1]; }
+function getDefRange(d)  { return d.type.range  * LEVEL_RANGE_MULT[d.level - 1]; }
+function getDefASpd(d)   { return d.type.attackSpeed * LEVEL_ASPD_MULT[d.level - 1]; }
+function getUpgradeCost(d) { return d.level < MAX_LEVEL ? UPGRADE_COSTS[d.level] : -1; }
 
 // --- Enemy types per wave ---
 function getWaveEnemies(w) {
@@ -200,6 +214,14 @@ canvas.addEventListener('pointerdown', (e) => {
   handleTap({ x: e.clientX, y: e.clientY });
 });
 
+function getUpgradeBtn() {
+  if (selectedPlacedDefender === null) return null;
+  const d = defenders[selectedPlacedDefender];
+  if (!d) return null;
+  const w = 80, h = 30;
+  return { x: d.x - w / 2, y: d.y - 52, w, h };
+}
+
 function handleTap(pos) {
   if (gameState === 'won' || gameState === 'lost') {
     resetGame();
@@ -224,11 +246,28 @@ function handleTap(pos) {
     }
   }
 
+  // Check upgrade button click
+  if (selectedPlacedDefender !== null) {
+    const ubtn = getUpgradeBtn();
+    if (ubtn && pos.x >= ubtn.x && pos.x <= ubtn.x + ubtn.w && pos.y >= ubtn.y && pos.y <= ubtn.y + ubtn.h) {
+      const d = defenders[selectedPlacedDefender];
+      const cost = getUpgradeCost(d);
+      if (cost >= 0 && gold >= cost) {
+        gold -= cost;
+        d.level++;
+        spawnParticles(d.x, d.y, '#ff0', 10);
+        saveGame();
+      }
+      return;
+    }
+  }
+
   // Check defender card selection
   const cards = getDefenderCards();
   for (let i = 0; i < cards.length; i++) {
     const c = cards[i];
     if (pos.x >= c.x && pos.x <= c.x + c.w && pos.y >= c.y && pos.y <= c.y + c.h) {
+      selectedPlacedDefender = null;
       if (gold >= DEFENDER_TYPES[i].cost) {
         selectedDefender = (selectedDefender === i) ? null : i;
       }
@@ -237,35 +276,42 @@ function handleTap(pos) {
   }
 
   // Check grid tile click — find which diamond tile was tapped
-  if (selectedDefender !== null) {
-    // Test each tile's diamond for the tap point
-    let hitCol = -1, hitRow = -1;
-    for (let r = 0; r < GRID_ROWS; r++) {
-      for (let c = 0; c < GRID_COLS; c++) {
-        if (isCampCell(c, r)) continue;
-        const sc = gridToScreen(c, r);
-        if (pointInDiamond(pos.x, pos.y, sc.x, sc.y)) {
-          hitCol = c; hitRow = r;
-        }
+  let hitCol = -1, hitRow = -1;
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (isCampCell(c, r)) continue;
+      const sc = gridToScreen(c, r);
+      if (pointInDiamond(pos.x, pos.y, sc.x, sc.y)) {
+        hitCol = c; hitRow = r;
       }
     }
-    if (hitCol >= 0 && hitRow >= 0) {
-      const occupied = defenders.some(d => d.col === hitCol && d.row === hitRow);
-      if (!occupied) {
-        const dt = DEFENDER_TYPES[selectedDefender];
-        if (gold >= dt.cost) {
-          gold -= dt.cost;
-          const sc = gridToScreen(hitCol, hitRow);
-          defenders.push({
-            col: hitCol, row: hitRow,
-            x: sc.x, y: sc.y,
-            type: dt,
-            attackTimer: 0,
-            angle: 0,
-          });
-          selectedDefender = null;
-          saveGame();
-        }
+  }
+
+  if (hitCol >= 0 && hitRow >= 0) {
+    // Check if tapping an existing defender to select it
+    const defIdx = defenders.findIndex(d => d.col === hitCol && d.row === hitRow);
+    if (defIdx >= 0 && selectedDefender === null) {
+      // Toggle selection of this placed defender
+      selectedPlacedDefender = (selectedPlacedDefender === defIdx) ? null : defIdx;
+      return;
+    }
+
+    // Place new defender if a card is selected
+    if (selectedDefender !== null && defIdx < 0) {
+      const dt = DEFENDER_TYPES[selectedDefender];
+      if (gold >= dt.cost) {
+        gold -= dt.cost;
+        const sc = gridToScreen(hitCol, hitRow);
+        defenders.push({
+          col: hitCol, row: hitRow,
+          x: sc.x, y: sc.y,
+          type: dt,
+          level: 1,
+          attackTimer: 0,
+          angle: 0,
+        });
+        selectedDefender = null;
+        saveGame();
       }
       return;
     }
@@ -273,6 +319,7 @@ function handleTap(pos) {
 
   // Tap elsewhere to deselect
   selectedDefender = null;
+  selectedPlacedDefender = null;
 }
 
 // --- UI Layout helpers ---
@@ -364,27 +411,30 @@ function update(dt) {
   for (const d of defenders) {
     d.attackTimer -= dt;
     if (d.attackTimer <= 0) {
+      const range = getDefRange(d);
+      const damage = getDefDamage(d);
+      const aspd = getDefASpd(d);
       let nearest = null, nearDist = Infinity;
       for (const e of enemies) {
         const dx = e.x - d.x, dy = e.y - d.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist <= d.type.range && dist < nearDist) {
+        if (dist <= range && dist < nearDist) {
           nearest = e; nearDist = dist;
         }
       }
       if (nearest) {
-        d.attackTimer = 1 / d.type.attackSpeed;
+        d.attackTimer = 1 / aspd;
         d.angle = Math.atan2(nearest.y - d.y, nearest.x - d.x);
         if (d.type.id === 'mage') {
           for (const e of enemies) {
             const dx = e.x - nearest.x, dy = e.y - nearest.y;
             if (Math.sqrt(dx * dx + dy * dy) < 50) {
-              e.hp -= d.type.damage;
+              e.hp -= damage;
             }
           }
           spawnParticles(nearest.x, nearest.y, '#66f', 8);
         } else if (d.type.id === 'healer') {
-          nearest.hp -= d.type.damage;
+          nearest.hp -= damage;
           nearest.slowFactor = 0.4;
           nearest.slowTimer = 2.0;
           spawnParticles(nearest.x, nearest.y, '#aef', 4);
@@ -394,7 +444,7 @@ function update(dt) {
             tx: nearest.x, ty: nearest.y,
             target: nearest,
             speed: 250,
-            damage: d.type.damage,
+            damage: damage,
             color: d.type.color,
           });
         }
@@ -638,8 +688,27 @@ function drawCamp() {
 }
 
 function drawDefenders() {
-  for (const d of defenders) {
+  for (let i = 0; i < defenders.length; i++) {
+    const d = defenders[i];
     const x = d.x, y = d.y;
+    const isSelected = (selectedPlacedDefender === i);
+
+    // Selection highlight ring
+    if (isSelected) {
+      ctx.strokeStyle = 'rgba(255,220,50,0.7)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(x, y, 20, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Range indicator for selected defender
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, getDefRange(d), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     // Body circle
     ctx.fillStyle = d.type.color;
     ctx.beginPath();
@@ -655,14 +724,74 @@ function drawDefenders() {
     ctx.textBaseline = 'middle';
     ctx.fillText(d.type.emoji, x, y + 1);
 
+    // Level stars
+    if (d.level >= 2) {
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fd0';
+      const stars = '⭐'.repeat(d.level - 1);
+      ctx.fillText(stars, x, y + 20);
+    }
+
     // Range indicator when a defender card is selected
-    if (selectedDefender !== null) {
+    if (selectedDefender !== null && !isSelected) {
       ctx.strokeStyle = 'rgba(255,255,255,0.15)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.arc(x, y, d.type.range, 0, Math.PI * 2);
+      ctx.arc(x, y, getDefRange(d), 0, Math.PI * 2);
       ctx.stroke();
     }
+  }
+
+  // Draw upgrade button for selected placed defender
+  if (selectedPlacedDefender !== null && defenders[selectedPlacedDefender]) {
+    const d = defenders[selectedPlacedDefender];
+    const ubtn = getUpgradeBtn();
+    if (ubtn && d.level < MAX_LEVEL) {
+      const cost = getUpgradeCost(d);
+      const canAfford = gold >= cost;
+
+      // Button background
+      ctx.fillStyle = canAfford ? 'rgba(50,180,50,0.85)' : 'rgba(100,100,100,0.7)';
+      roundRect(ctx, ubtn.x, ubtn.y, ubtn.w, ubtn.h, 6);
+      ctx.fill();
+      ctx.strokeStyle = canAfford ? 'rgba(255,255,255,0.5)' : 'rgba(150,150,150,0.4)';
+      ctx.lineWidth = 1;
+      roundRect(ctx, ubtn.x, ubtn.y, ubtn.w, ubtn.h, 6);
+      ctx.stroke();
+
+      // Button text
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = canAfford ? '#fff' : '#aaa';
+      ctx.fillText('升级 💰' + cost, ubtn.x + ubtn.w / 2, ubtn.y + ubtn.h / 2);
+    } else if (d.level >= MAX_LEVEL) {
+      // Show MAX label
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fd0';
+      ctx.fillText('MAX', d.x, d.y - 46);
+    }
+
+    // Show stat info below the defender
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    const infoW = 90, infoH = 36;
+    const infoX = d.x - infoW / 2, infoY = d.y + 26;
+    roundRect(ctx, infoX, infoY, infoW, infoH, 4);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('攻击:' + Math.round(getDefDamage(d)), infoX + 4, infoY + 11);
+    ctx.fillText('射程:' + Math.round(getDefRange(d)), infoX + 4, infoY + 24);
+    ctx.textAlign = 'right';
+    ctx.fillText('攻速:' + getDefASpd(d).toFixed(1), infoX + infoW - 4, infoY + 11);
+    ctx.fillText('Lv.' + d.level, infoX + infoW - 4, infoY + 24);
   }
 }
 
@@ -859,6 +988,7 @@ function saveGame() {
     defenders: defenders.map(d => ({
       col: d.col, row: d.row,
       typeId: d.type.id,
+      level: d.level,
       attackTimer: d.attackTimer,
       angle: d.angle,
     })),
@@ -891,6 +1021,7 @@ function loadGame() {
   gameState = data.gameState;
   allWavesDone = data.allWavesDone;
   selectedDefender = null;
+  selectedPlacedDefender = null;
   projectiles = [];
   particles = [];
 
@@ -903,6 +1034,7 @@ function loadGame() {
       col: d.col, row: d.row,
       x: sc.x, y: sc.y,
       type: dt,
+      level: d.level || 1,
       attackTimer: d.attackTimer || 0,
       angle: d.angle || 0,
     };
@@ -932,6 +1064,7 @@ function resetGame() {
   gameSpeed = 1;
   gameState = 'playing';
   selectedDefender = null;
+  selectedPlacedDefender = null;
   enemies = [];
   defenders = [];
   projectiles = [];
