@@ -49,7 +49,7 @@ const TILE_W = 64;   // diamond tile width (horizontal span)
 const TILE_H = 38;   // diamond tile height (vertical span)
 const GRID_COLS = 5;
 const GRID_ROWS = 5;
-const TOTAL_WAVES = 5;
+let TOTAL_WAVES = 5;
 const CAMP_COL = 2;
 const CAMP_ROW = 2;
 const MAX_LEVEL = 3;
@@ -59,6 +59,56 @@ const UPGRADE_COSTS = [0, 20, 40]; // index = current level, value = cost to upg
 const LEVEL_DAMAGE_MULT  = [1, 1.5, 2.0];
 const LEVEL_RANGE_MULT   = [1, 1.15, 1.3];
 const LEVEL_ASPD_MULT    = [1, 1.2, 1.4];
+
+// --- Level configurations ---
+const LEVELS = [
+  { id: 1, name: '新手训练', desc: '3波 | 初始120金', waves: 3, gold: 120, hpMult: 0.8, speedMult: 0.9, emoji: '🌱' },
+  { id: 2, name: '沙漠营地', desc: '5波 | 初始100金', waves: 5, gold: 100, hpMult: 1.0, speedMult: 1.0, emoji: '🏕️' },
+  { id: 3, name: '前线阵地', desc: '7波 | 初始80金',  waves: 7, gold: 80,  hpMult: 1.2, speedMult: 1.1, emoji: '⚔️' },
+  { id: 4, name: '死亡峡谷', desc: '10波 | 初始60金', waves: 10, gold: 60, hpMult: 1.5, speedMult: 1.2, emoji: '💀' },
+];
+
+// --- Background themes ---
+const BG_THEMES = [
+  { id: 'desert',    name: '沙漠', emoji: '🏜️',
+    gradient: ['#e8c878', '#dbb860', '#c9a84c'],
+    waveColor: 'rgba(180, 140, 60, 0.3)',
+    tileColors: { ring1: 'rgba(220, 190, 130, 0.6)', ring2: 'rgba(200, 170, 110, 0.5)',
+                  ring1Alt: 'rgba(225, 195, 140, 0.6)', ring2Alt: 'rgba(210, 180, 120, 0.5)' },
+    tileBorder: 'rgba(160, 130, 80, 0.5)',
+    campTile: 'rgba(180, 140, 90, 0.7)', campBorder: 'rgba(140, 100, 60, 0.6)',
+    decorations: 'desert' },
+  { id: 'grassland', name: '草原', emoji: '🌿',
+    gradient: ['#7ec850', '#5ba840', '#4a8a35'],
+    waveColor: 'rgba(60, 120, 40, 0.25)',
+    tileColors: { ring1: 'rgba(130, 200, 110, 0.6)', ring2: 'rgba(110, 180, 90, 0.5)',
+                  ring1Alt: 'rgba(140, 210, 120, 0.6)', ring2Alt: 'rgba(120, 190, 100, 0.5)' },
+    tileBorder: 'rgba(80, 130, 60, 0.5)',
+    campTile: 'rgba(100, 160, 80, 0.7)', campBorder: 'rgba(70, 120, 50, 0.6)',
+    decorations: 'grassland' },
+  { id: 'snow',      name: '雪地', emoji: '❄️',
+    gradient: ['#d4e8f0', '#b8d4e4', '#9cc0d8'],
+    waveColor: 'rgba(150, 180, 200, 0.25)',
+    tileColors: { ring1: 'rgba(200, 220, 240, 0.6)', ring2: 'rgba(180, 200, 220, 0.5)',
+                  ring1Alt: 'rgba(210, 230, 245, 0.6)', ring2Alt: 'rgba(190, 210, 230, 0.5)' },
+    tileBorder: 'rgba(140, 160, 180, 0.5)',
+    campTile: 'rgba(170, 195, 215, 0.7)', campBorder: 'rgba(130, 155, 175, 0.6)',
+    decorations: 'snow' },
+  { id: 'lava',      name: '熔岩', emoji: '🌋',
+    gradient: ['#4a2020', '#3a1515', '#2a0e0e'],
+    waveColor: 'rgba(200, 80, 30, 0.2)',
+    tileColors: { ring1: 'rgba(120, 60, 40, 0.6)', ring2: 'rgba(100, 45, 30, 0.5)',
+                  ring1Alt: 'rgba(130, 65, 45, 0.6)', ring2Alt: 'rgba(110, 50, 35, 0.5)' },
+    tileBorder: 'rgba(180, 80, 40, 0.5)',
+    campTile: 'rgba(140, 70, 40, 0.7)', campBorder: 'rgba(180, 90, 50, 0.6)',
+    decorations: 'lava' },
+];
+
+let selectedLevel = null;   // index into LEVELS
+let selectedBgTheme = 0;    // index into BG_THEMES
+let currentLevel = LEVELS[1]; // default level config
+let currentTheme = BG_THEMES[0]; // current background theme
+let menuSelection = 'level'; // 'level' or 'background' tab on menu
 
 // --- Isometric coordinate helpers ---
 // Grid center on screen
@@ -132,7 +182,7 @@ let waveActive = false;
 let waveEnemiesSpawned = 0;
 let waveEnemiesTotal = 0;
 let gameSpeed = 1;
-let gameState = 'playing'; // 'playing', 'won', 'lost'
+let gameState = 'menu'; // 'menu', 'playing', 'won', 'lost'
 let selectedDefender = null;
 let selectedPlacedDefender = null; // index into defenders[] for upgrade UI
 let enemies = [];
@@ -163,11 +213,13 @@ function getWaveEnemies(w) {
 }
 
 function createEnemy(w) {
+  const hpM = currentLevel.hpMult;
+  const spdM = currentLevel.speedMult;
   const types = [
-    { name: '史莱姆', hp: 30 + w*10, speed: 0.6 + w*0.05, color: '#6c3', reward: 10, size: 14, emoji: '🟢' },
-    { name: '蝎子',   hp: 50 + w*15, speed: 0.5 + w*0.04, color: '#c93', reward: 15, size: 16, emoji: '🦂' },
-    { name: '骷髅',   hp: 80 + w*20, speed: 0.4 + w*0.03, color: '#ddd', reward: 20, size: 18, emoji: '💀' },
-    { name: 'Boss',   hp: 200 + w*50, speed: 0.3, color: '#f44', reward: 50, size: 24, emoji: '👹' },
+    { name: '史莱姆', hp: (30 + w*10)*hpM, speed: (0.6 + w*0.05)*spdM, color: '#6c3', reward: 10, size: 14, emoji: '🟢' },
+    { name: '蝎子',   hp: (50 + w*15)*hpM, speed: (0.5 + w*0.04)*spdM, color: '#c93', reward: 15, size: 16, emoji: '🦂' },
+    { name: '骷髅',   hp: (80 + w*20)*hpM, speed: (0.4 + w*0.03)*spdM, color: '#ddd', reward: 20, size: 18, emoji: '💀' },
+    { name: 'Boss',   hp: (200 + w*50)*hpM, speed: 0.3*spdM, color: '#f44', reward: 50, size: 24, emoji: '👹' },
   ];
   let typeIdx = 0;
   if (w >= 2) typeIdx = Math.random() < 0.4 ? 1 : 0;
@@ -223,8 +275,21 @@ function getUpgradeBtn() {
 }
 
 function handleTap(pos) {
+  // Menu screen interactions
+  if (gameState === 'menu') {
+    handleMenuTap(pos);
+    return;
+  }
+
   if (gameState === 'won' || gameState === 'lost') {
-    resetGame();
+    goToMenu();
+    return;
+  }
+
+  // Back to menu button (top-left area)
+  const menuBtn = getMenuBtn();
+  if (pos.x >= menuBtn.x && pos.x <= menuBtn.x + menuBtn.w && pos.y >= menuBtn.y && pos.y <= menuBtn.y + menuBtn.h) {
+    goToMenu();
     return;
   }
 
@@ -516,6 +581,11 @@ function draw() {
   const W = getW(), H = getH();
   ctx.clearRect(0, 0, W, H);
 
+  if (gameState === 'menu') {
+    drawMenu();
+    return;
+  }
+
   drawBackground(W, H);
   drawGrid();
   drawCamp();
@@ -529,17 +599,261 @@ function draw() {
   if (gameState === 'lost') drawEndScreen('失 败', '#f44', '营地被摧毁了...');
 }
 
-function drawBackground(W, H) {
-  // Desert gradient
+function getMenuBtn() {
+  return { x: 8, y: 6, w: 36, h: 28 };
+}
+
+function goToMenu() {
+  gameState = 'menu';
+  selectedLevel = null;
+  clearSave();
+}
+
+// --- Menu tap handling ---
+function handleMenuTap(pos) {
+  const W = getW(), H = getH();
+  const centerX = W / 2;
+
+  // Tab buttons
+  const tabW = 100, tabH = 36, tabGap = 16;
+  const tabY = 80;
+  const levelTabX = centerX - tabW - tabGap / 2;
+  const bgTabX = centerX + tabGap / 2;
+
+  if (pos.y >= tabY && pos.y <= tabY + tabH) {
+    if (pos.x >= levelTabX && pos.x <= levelTabX + tabW) {
+      menuSelection = 'level';
+      return;
+    }
+    if (pos.x >= bgTabX && pos.x <= bgTabX + tabW) {
+      menuSelection = 'background';
+      return;
+    }
+  }
+
+  if (menuSelection === 'level') {
+    // Level cards
+    const cardW = 160, cardH = 72, cardGap = 12;
+    const totalH = LEVELS.length * (cardH + cardGap) - cardGap;
+    const startY = 140;
+    for (let i = 0; i < LEVELS.length; i++) {
+      const cx = centerX - cardW / 2;
+      const cy = startY + i * (cardH + cardGap);
+      if (pos.x >= cx && pos.x <= cx + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        selectedLevel = i;
+        currentLevel = LEVELS[i];
+        TOTAL_WAVES = currentLevel.waves;
+        startGameFromMenu();
+        return;
+      }
+    }
+  } else {
+    // Background theme cards
+    const cardW = 140, cardH = 60, cardGap = 12;
+    const startY = 140;
+    for (let i = 0; i < BG_THEMES.length; i++) {
+      const cx = centerX - cardW / 2;
+      const cy = startY + i * (cardH + cardGap);
+      if (pos.x >= cx && pos.x <= cx + cardW && pos.y >= cy && pos.y <= cy + cardH) {
+        selectedBgTheme = i;
+        currentTheme = BG_THEMES[i];
+        return;
+      }
+    }
+  }
+}
+
+function startGameFromMenu() {
+  gold = currentLevel.gold;
+  campHP = 100;
+  campMaxHP = 100;
+  wave = 0;
+  waveActive = false;
+  gameSpeed = 1;
+  gameState = 'playing';
+  selectedDefender = null;
+  selectedPlacedDefender = null;
+  enemies = [];
+  defenders = [];
+  projectiles = [];
+  particles = [];
+  allWavesDone = false;
+  TOTAL_WAVES = currentLevel.waves;
+  clearSave();
+}
+
+// --- Draw Menu ---
+function drawMenu() {
+  const W = getW(), H = getH();
+
+  // Background
   const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, '#e8c878');
-  grad.addColorStop(0.5, '#dbb860');
-  grad.addColorStop(1, '#c9a84c');
+  grad.addColorStop(0, '#1a1a2e');
+  grad.addColorStop(0.5, '#16213e');
+  grad.addColorStop(1, '#0f3460');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
-  // Sand wave pattern
-  ctx.strokeStyle = 'rgba(180, 140, 60, 0.3)';
+  // Animated dots
+  const time = Date.now() / 1000;
+  for (let i = 0; i < 20; i++) {
+    const x = (i * 97 + time * 15) % W;
+    const y = (i * 61 + Math.sin(time + i) * 20) % H;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const centerX = W / 2;
+
+  // Title
+  ctx.font = 'bold 32px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fd0';
+  ctx.fillText('营地保卫战', centerX, 40);
+
+  // Tab buttons
+  const tabW = 100, tabH = 36, tabGap = 16;
+  const tabY = 80;
+  const levelTabX = centerX - tabW - tabGap / 2;
+  const bgTabX = centerX + tabGap / 2;
+
+  // Level tab
+  ctx.fillStyle = menuSelection === 'level' ? 'rgba(255,200,50,0.7)' : 'rgba(255,255,255,0.15)';
+  roundRect(ctx, levelTabX, tabY, tabW, tabH, 8);
+  ctx.fill();
+  ctx.font = 'bold 15px sans-serif';
+  ctx.fillStyle = menuSelection === 'level' ? '#000' : '#ccc';
+  ctx.fillText('选择关卡', levelTabX + tabW / 2, tabY + tabH / 2);
+
+  // Background tab
+  ctx.fillStyle = menuSelection === 'background' ? 'rgba(255,200,50,0.7)' : 'rgba(255,255,255,0.15)';
+  roundRect(ctx, bgTabX, tabY, tabW, tabH, 8);
+  ctx.fill();
+  ctx.fillStyle = menuSelection === 'background' ? '#000' : '#ccc';
+  ctx.fillText('选择背景', bgTabX + tabW / 2, tabY + tabH / 2);
+
+  if (menuSelection === 'level') {
+    drawLevelSelect(W, H, centerX);
+  } else {
+    drawBgSelect(W, H, centerX);
+  }
+}
+
+function drawLevelSelect(W, H, centerX) {
+  const cardW = 160, cardH = 72, cardGap = 12;
+  const startY = 140;
+
+  for (let i = 0; i < LEVELS.length; i++) {
+    const lv = LEVELS[i];
+    const cx = centerX - cardW / 2;
+    const cy = startY + i * (cardH + cardGap);
+
+    // Card background
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.stroke();
+
+    // Emoji
+    ctx.font = '28px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(lv.emoji, cx + 30, cy + cardH / 2);
+
+    // Level name
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(lv.name, cx + 55, cy + 24);
+
+    // Description
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(lv.desc, cx + 55, cy + 48);
+  }
+
+  // Hint
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('点击关卡开始游戏', centerX, startY + LEVELS.length * (cardH + cardGap) + 16);
+}
+
+function drawBgSelect(W, H, centerX) {
+  const cardW = 140, cardH = 60, cardGap = 12;
+  const startY = 140;
+
+  for (let i = 0; i < BG_THEMES.length; i++) {
+    const bg = BG_THEMES[i];
+    const cx = centerX - cardW / 2;
+    const cy = startY + i * (cardH + cardGap);
+    const isSelected = selectedBgTheme === i;
+
+    // Card background with theme preview gradient
+    const cGrad = ctx.createLinearGradient(cx, cy, cx + cardW, cy);
+    cGrad.addColorStop(0, bg.gradient[0]);
+    cGrad.addColorStop(1, bg.gradient[2]);
+    ctx.fillStyle = cGrad;
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.fill();
+
+    // Darken overlay for readability
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.fill();
+
+    // Selection border
+    ctx.strokeStyle = isSelected ? '#fd0' : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = isSelected ? 2.5 : 1;
+    roundRect(ctx, cx, cy, cardW, cardH, 10);
+    ctx.stroke();
+
+    // Emoji + name
+    ctx.font = '22px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(bg.emoji, cx + 30, cy + cardH / 2);
+
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(bg.name, cx + 55, cy + cardH / 2);
+
+    // Checkmark for selected
+    if (isSelected) {
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#fd0';
+      ctx.fillText('✓', cx + cardW - 12, cy + cardH / 2);
+    }
+  }
+
+  // Hint
+  ctx.font = '13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillText('选择背景后切换到"选择关卡"开始', centerX, startY + BG_THEMES.length * (cardH + cardGap) + 16);
+}
+
+function drawBackground(W, H) {
+  const theme = currentTheme;
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, theme.gradient[0]);
+  grad.addColorStop(0.5, theme.gradient[1]);
+  grad.addColorStop(1, theme.gradient[2]);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Wave pattern
+  ctx.strokeStyle = theme.waveColor;
   ctx.lineWidth = 1.5;
   for (let i = 0; i < 8; i++) {
     ctx.beginPath();
@@ -551,15 +865,34 @@ function drawBackground(W, H) {
     ctx.stroke();
   }
 
-  // Decorative elements relative to grid edges
+  // Decorative elements based on theme
   const topPos   = gridToScreen(0, 0);
   const rightPos = gridToScreen(4, 0);
   const botPos   = gridToScreen(4, 4);
   const leftPos  = gridToScreen(0, 4);
-  drawCactus(leftPos.x - 30, leftPos.y + 10);
-  drawCactus(rightPos.x + 25, rightPos.y + 15);
-  drawDeadTree(rightPos.x + 15, topPos.y - 20);
-  drawPineTree(leftPos.x - 25, topPos.y + 10);
+
+  if (theme.decorations === 'desert') {
+    drawCactus(leftPos.x - 30, leftPos.y + 10);
+    drawCactus(rightPos.x + 25, rightPos.y + 15);
+    drawDeadTree(rightPos.x + 15, topPos.y - 20);
+    drawPineTree(leftPos.x - 25, topPos.y + 10);
+  } else if (theme.decorations === 'grassland') {
+    drawFlower(leftPos.x - 30, leftPos.y + 10);
+    drawFlower(rightPos.x + 25, rightPos.y + 15);
+    drawPineTree(rightPos.x + 15, topPos.y - 20);
+    drawPineTree(leftPos.x - 25, topPos.y + 10);
+    drawBush(botPos.x + 20, botPos.y - 10);
+  } else if (theme.decorations === 'snow') {
+    drawSnowTree(leftPos.x - 30, leftPos.y + 10);
+    drawSnowTree(rightPos.x + 25, rightPos.y + 15);
+    drawSnowman(rightPos.x + 15, topPos.y - 10);
+    drawSnowTree(leftPos.x - 25, topPos.y + 10);
+  } else if (theme.decorations === 'lava') {
+    drawLavaRock(leftPos.x - 30, leftPos.y + 10);
+    drawLavaRock(rightPos.x + 25, rightPos.y + 15);
+    drawLavaCrack(rightPos.x + 15, topPos.y - 10);
+    drawLavaRock(leftPos.x - 25, topPos.y + 10);
+  }
 }
 
 function drawCactus(x, y) {
@@ -589,7 +922,109 @@ function drawPineTree(x, y) {
   ctx.fillRect(x - 3, y, 6, 8);
 }
 
+// --- Grassland decorations ---
+function drawFlower(x, y) {
+  // Stem
+  ctx.strokeStyle = '#396';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, y + 5); ctx.lineTo(x, y - 15); ctx.stroke();
+  // Petals
+  const colors = ['#f66', '#ff6', '#f6f', '#6cf'];
+  const c = colors[Math.floor(Math.abs(x * y)) % colors.length];
+  ctx.fillStyle = c;
+  for (let a = 0; a < 5; a++) {
+    const angle = (a / 5) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(x + Math.cos(angle) * 6, y - 15 + Math.sin(angle) * 6, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Center
+  ctx.fillStyle = '#fd0';
+  ctx.beginPath(); ctx.arc(x, y - 15, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawBush(x, y) {
+  ctx.fillStyle = '#4a8';
+  ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x - 8, y + 2, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 8, y + 2, 9, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#5b9';
+  ctx.beginPath(); ctx.arc(x, y - 3, 6, 0, Math.PI * 2); ctx.fill();
+}
+
+// --- Snow decorations ---
+function drawSnowTree(x, y) {
+  // Trunk
+  ctx.fillStyle = '#654';
+  ctx.fillRect(x - 3, y, 6, 10);
+  // Snow-covered foliage
+  ctx.fillStyle = '#6a9';
+  ctx.beginPath(); ctx.moveTo(x, y - 30); ctx.lineTo(x - 14, y); ctx.lineTo(x + 14, y); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#7ba';
+  ctx.beginPath(); ctx.moveTo(x, y - 22); ctx.lineTo(x - 11, y - 5); ctx.lineTo(x + 11, y - 5); ctx.closePath(); ctx.fill();
+  // Snow caps
+  ctx.fillStyle = '#eef';
+  ctx.beginPath(); ctx.moveTo(x, y - 30); ctx.lineTo(x - 7, y - 18); ctx.lineTo(x + 7, y - 18); ctx.closePath(); ctx.fill();
+}
+
+function drawSnowman(x, y) {
+  ctx.fillStyle = '#eef';
+  ctx.beginPath(); ctx.arc(x, y + 8, 10, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y - 5, 7, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y - 15, 5, 0, Math.PI * 2); ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#333';
+  ctx.beginPath(); ctx.arc(x - 2, y - 16, 1, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 2, y - 16, 1, 0, Math.PI * 2); ctx.fill();
+  // Nose
+  ctx.fillStyle = '#f80';
+  ctx.beginPath(); ctx.moveTo(x, y - 14); ctx.lineTo(x + 6, y - 13); ctx.lineTo(x, y - 12); ctx.closePath(); ctx.fill();
+}
+
+// --- Lava decorations ---
+function drawLavaRock(x, y) {
+  ctx.fillStyle = '#444';
+  ctx.beginPath();
+  ctx.moveTo(x - 10, y + 5);
+  ctx.lineTo(x - 6, y - 15);
+  ctx.lineTo(x + 2, y - 18);
+  ctx.lineTo(x + 10, y - 8);
+  ctx.lineTo(x + 8, y + 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#555';
+  ctx.beginPath();
+  ctx.moveTo(x - 4, y - 12);
+  ctx.lineTo(x + 1, y - 16);
+  ctx.lineTo(x + 8, y - 6);
+  ctx.lineTo(x + 2, y - 5);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawLavaCrack(x, y) {
+  ctx.strokeStyle = '#f62';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y - 10);
+  ctx.lineTo(x - 2, y);
+  ctx.lineTo(x + 5, y - 5);
+  ctx.lineTo(x + 10, y + 8);
+  ctx.stroke();
+  // Glow
+  ctx.strokeStyle = 'rgba(255, 100, 20, 0.4)';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y - 10);
+  ctx.lineTo(x - 2, y);
+  ctx.lineTo(x + 5, y - 5);
+  ctx.lineTo(x + 10, y + 8);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
 function drawGrid() {
+  const theme = currentTheme;
   // Draw tiles from back to front (top to bottom in isometric order)
   for (let r = 0; r < GRID_ROWS; r++) {
     for (let c = 0; c < GRID_COLS; c++) {
@@ -597,15 +1032,15 @@ function drawGrid() {
       const sc = gridToScreen(c, r);
       const ring = getCellRing(c, r);
 
-      // Tile fill — different shade per ring
+      // Tile fill — different shade per ring, using theme colors
       if (ring === 1) {
-        ctx.fillStyle = 'rgba(220, 190, 130, 0.6)';
+        ctx.fillStyle = theme.tileColors.ring1;
       } else {
-        ctx.fillStyle = 'rgba(200, 170, 110, 0.5)';
+        ctx.fillStyle = theme.tileColors.ring2;
       }
       // Alternate tint
       if ((r + c) % 2 === 0) {
-        ctx.fillStyle = ring === 1 ? 'rgba(225, 195, 140, 0.6)' : 'rgba(210, 180, 120, 0.5)';
+        ctx.fillStyle = ring === 1 ? theme.tileColors.ring1Alt : theme.tileColors.ring2Alt;
       }
 
       diamondPath(sc.x, sc.y, 1);
@@ -622,7 +1057,7 @@ function drawGrid() {
       }
 
       // Tile border
-      ctx.strokeStyle = 'rgba(160, 130, 80, 0.5)';
+      ctx.strokeStyle = theme.tileBorder;
       ctx.lineWidth = 1;
       diamondPath(sc.x, sc.y, 1);
       ctx.stroke();
@@ -635,10 +1070,10 @@ function drawCamp() {
   const cx = sc.x, cy = sc.y;
 
   // Draw camp diamond tile
-  ctx.fillStyle = 'rgba(180, 140, 90, 0.7)';
+  ctx.fillStyle = currentTheme.campTile;
   diamondPath(cx, cy, 1);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(140, 100, 60, 0.6)';
+  ctx.strokeStyle = currentTheme.campBorder;
   ctx.lineWidth = 1.5;
   diamondPath(cx, cy, 1);
   ctx.stroke();
@@ -861,12 +1296,23 @@ function drawUI(W, H) {
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.fillRect(0, 0, W, 40);
 
+  // Menu button
+  const menuBtn = getMenuBtn();
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  roundRect(ctx, menuBtn.x, menuBtn.y, menuBtn.w, menuBtn.h, 6);
+  ctx.fill();
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.fillText('☰', menuBtn.x + menuBtn.w / 2, menuBtn.y + menuBtn.h / 2);
+
   // Gold
   ctx.font = 'bold 16px sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#fd0';
-  ctx.fillText('💰 ' + gold, 12, 20);
+  ctx.fillText('💰 ' + gold, menuBtn.x + menuBtn.w + 8, 20);
 
   // Wave info
   ctx.textAlign = 'center';
@@ -958,7 +1404,7 @@ function drawEndScreen(title, color, subtitle) {
 
   ctx.font = '16px sans-serif';
   ctx.fillStyle = '#aaa';
-  ctx.fillText('点击屏幕重新开始', W/2, H/2 + 60);
+  ctx.fillText('点击屏幕返回菜单', W/2, H/2 + 60);
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -981,10 +1427,13 @@ const SAVE_INTERVAL = 3; // auto-save every 3 seconds
 let saveTimer = 0;
 
 function saveGame() {
+  if (gameState === 'menu') return;
   const data = {
     gold, campHP, wave, waveActive,
     waveEnemiesSpawned, waveEnemiesTotal, spawnTimer,
     gameSpeed, gameState, allWavesDone,
+    levelId: currentLevel.id,
+    themeId: currentTheme.id,
     defenders: defenders.map(d => ({
       col: d.col, row: d.row,
       typeId: d.type.id,
@@ -1009,6 +1458,16 @@ function loadGame() {
   if (!raw) return false;
   let data;
   try { data = JSON.parse(raw); } catch(e) { return false; }
+
+  // Restore level and theme
+  if (data.levelId) {
+    const lvIdx = LEVELS.findIndex(l => l.id === data.levelId);
+    if (lvIdx >= 0) { selectedLevel = lvIdx; currentLevel = LEVELS[lvIdx]; TOTAL_WAVES = currentLevel.waves; }
+  }
+  if (data.themeId) {
+    const thIdx = BG_THEMES.findIndex(t => t.id === data.themeId);
+    if (thIdx >= 0) { selectedBgTheme = thIdx; currentTheme = BG_THEMES[thIdx]; }
+  }
 
   gold = data.gold;
   campHP = data.campHP;
@@ -1057,24 +1516,13 @@ function clearSave() {
 }
 
 function resetGame() {
-  gold = 100;
-  campHP = 100;
-  wave = 0;
-  waveActive = false;
-  gameSpeed = 1;
-  gameState = 'playing';
-  selectedDefender = null;
-  selectedPlacedDefender = null;
-  enemies = [];
-  defenders = [];
-  projectiles = [];
-  particles = [];
-  allWavesDone = false;
-  clearSave();
+  goToMenu();
 }
 
 // --- Auto-load save on startup ---
-loadGame();
+if (!loadGame()) {
+  gameState = 'menu';
+}
 
 // --- Main loop ---
 let lastTime = 0;
