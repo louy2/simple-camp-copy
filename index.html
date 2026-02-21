@@ -139,6 +139,7 @@ let enemies = [];
 let defenders = [];
 let projectiles = [];
 let particles = [];
+let floatingTexts = [];
 let spawnTimer = 0;
 let waveDelay = 0;
 let allWavesDone = false;
@@ -478,6 +479,13 @@ function update(dt) {
     if (enemies[i].hp <= 0) {
       gold += enemies[i].reward;
       spawnParticles(enemies[i].x, enemies[i].y, '#ff0', 6);
+      floatingTexts.push({
+        x: enemies[i].x,
+        y: enemies[i].y,
+        text: '+' + enemies[i].reward + ' 💰',
+        life: 1.0,
+        maxLife: 1.0,
+      });
       enemies.splice(i, 1);
     }
   }
@@ -488,6 +496,14 @@ function update(dt) {
     p.x += p.vx * dt; p.y += p.vy * dt;
     p.life -= dt;
     if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // Update floating texts
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const ft = floatingTexts[i];
+    ft.y -= 40 * dt; // float upward
+    ft.life -= dt;
+    if (ft.life <= 0) floatingTexts.splice(i, 1);
   }
 
   // Auto-save periodically
@@ -523,6 +539,7 @@ function draw() {
   drawEnemies();
   drawProjectiles();
   drawParticles();
+  drawFloatingTexts();
   drawUI(W, H);
 
   if (gameState === 'won') drawEndScreen('胜 利！', '#4f4', '营地安全了！');
@@ -856,6 +873,22 @@ function drawParticles() {
   ctx.globalAlpha = 1;
 }
 
+function drawFloatingTexts() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const ft of floatingTexts) {
+    const alpha = ft.life / ft.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillStyle = '#fd0';
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 3;
+    ctx.strokeText(ft.text, ft.x, ft.y);
+    ctx.fillText(ft.text, ft.x, ft.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
 function drawUI(W, H) {
   // Top bar background
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -1024,6 +1057,7 @@ function loadGame() {
   selectedPlacedDefender = null;
   projectiles = [];
   particles = [];
+  floatingTexts = [];
 
   // Restore defenders with type reference
   defenders = (data.defenders || []).map(d => {
@@ -1069,6 +1103,7 @@ function resetGame() {
   defenders = [];
   projectiles = [];
   particles = [];
+  floatingTexts = [];
   allWavesDone = false;
   clearSave();
 }
