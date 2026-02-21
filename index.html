@@ -264,6 +264,7 @@ function handleTap(pos) {
             angle: 0,
           });
           selectedDefender = null;
+          saveGame();
         }
       }
       return;
@@ -311,6 +312,7 @@ function startNextWave() {
   waveEnemiesSpawned = 0;
   waveEnemiesTotal = getWaveEnemies(wave);
   spawnTimer = 0;
+  saveGame();
 }
 
 function update(dt) {
@@ -334,6 +336,7 @@ function update(dt) {
       allWavesDone = true;
       gameState = 'won';
     }
+    saveGame();
   }
 
   // Move enemies toward camp center
@@ -349,7 +352,7 @@ function update(dt) {
       campHP -= 10;
       spawnParticles(e.x, e.y, '#f44', 5);
       enemies.splice(i, 1);
-      if (campHP <= 0) { campHP = 0; gameState = 'lost'; }
+      if (campHP <= 0) { campHP = 0; gameState = 'lost'; saveGame(); }
       continue;
     }
     const spd = e.speed * e.slowFactor * 60 * dt;
@@ -435,6 +438,13 @@ function update(dt) {
     p.x += p.vx * dt; p.y += p.vy * dt;
     p.life -= dt;
     if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // Auto-save periodically
+  saveTimer += dt;
+  if (saveTimer >= SAVE_INTERVAL) {
+    saveTimer = 0;
+    saveGame();
   }
 }
 
@@ -836,6 +846,84 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// --- Save / Load (localStorage) ---
+const SAVE_KEY = 'campDefenseSave';
+const SAVE_INTERVAL = 3; // auto-save every 3 seconds
+let saveTimer = 0;
+
+function saveGame() {
+  const data = {
+    gold, campHP, wave, waveActive,
+    waveEnemiesSpawned, waveEnemiesTotal, spawnTimer,
+    gameSpeed, gameState, allWavesDone,
+    defenders: defenders.map(d => ({
+      col: d.col, row: d.row,
+      typeId: d.type.id,
+      attackTimer: d.attackTimer,
+      angle: d.angle,
+    })),
+    enemies: enemies.map(e => ({
+      x: e.x, y: e.y, hp: e.hp, maxHP: e.maxHP,
+      speed: e.speed, color: e.color, reward: e.reward,
+      size: e.size, emoji: e.emoji, name: e.name,
+      slowTimer: e.slowTimer, slowFactor: e.slowFactor,
+      targetX: e.targetX, targetY: e.targetY,
+    })),
+  };
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch(e) {}
+}
+
+function loadGame() {
+  let raw;
+  try { raw = localStorage.getItem(SAVE_KEY); } catch(e) { return false; }
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); } catch(e) { return false; }
+
+  gold = data.gold;
+  campHP = data.campHP;
+  wave = data.wave;
+  waveActive = data.waveActive;
+  waveEnemiesSpawned = data.waveEnemiesSpawned;
+  waveEnemiesTotal = data.waveEnemiesTotal;
+  spawnTimer = data.spawnTimer || 0;
+  gameSpeed = data.gameSpeed;
+  gameState = data.gameState;
+  allWavesDone = data.allWavesDone;
+  selectedDefender = null;
+  projectiles = [];
+  particles = [];
+
+  // Restore defenders with type reference
+  defenders = (data.defenders || []).map(d => {
+    const dt = DEFENDER_TYPES.find(t => t.id === d.typeId);
+    if (!dt) return null;
+    const sc = gridToScreen(d.col, d.row);
+    return {
+      col: d.col, row: d.row,
+      x: sc.x, y: sc.y,
+      type: dt,
+      attackTimer: d.attackTimer || 0,
+      angle: d.angle || 0,
+    };
+  }).filter(Boolean);
+
+  // Restore enemies
+  enemies = (data.enemies || []).map(e => ({
+    x: e.x, y: e.y, hp: e.hp, maxHP: e.maxHP,
+    speed: e.speed, color: e.color, reward: e.reward,
+    size: e.size, emoji: e.emoji, name: e.name,
+    slowTimer: e.slowTimer || 0, slowFactor: e.slowFactor || 1,
+    targetX: e.targetX, targetY: e.targetY,
+  }));
+
+  return true;
+}
+
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch(e) {}
+}
+
 function resetGame() {
   gold = 100;
   campHP = 100;
@@ -849,7 +937,11 @@ function resetGame() {
   projectiles = [];
   particles = [];
   allWavesDone = false;
+  clearSave();
 }
+
+// --- Auto-load save on startup ---
+loadGame();
 
 // --- Main loop ---
 let lastTime = 0;
