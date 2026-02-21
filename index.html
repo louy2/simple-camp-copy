@@ -45,12 +45,76 @@ function getW() { return window.innerWidth; }
 function getH() { return window.innerHeight; }
 
 // --- Constants ---
-const TILE_SIZE = 50;
+const TILE_W = 64;   // diamond tile width (horizontal span)
+const TILE_H = 38;   // diamond tile height (vertical span)
 const GRID_COLS = 5;
 const GRID_ROWS = 5;
 const TOTAL_WAVES = 5;
 const CAMP_COL = 2;
 const CAMP_ROW = 2;
+
+// --- Isometric coordinate helpers ---
+// Grid center on screen
+function gridCenterX() { return getW() / 2; }
+function gridCenterY() { return getH() / 2 - 50; }
+
+// Convert grid (col, row) to screen (x, y) — center of that diamond tile
+function gridToScreen(col, row) {
+  const dc = col - CAMP_COL;
+  const dr = row - CAMP_ROW;
+  return {
+    x: gridCenterX() + (dc - dr) * TILE_W / 2,
+    y: gridCenterY() + (dc + dr) * TILE_H / 2,
+  };
+}
+
+// Convert screen (x, y) to grid (col, row) — returns fractional, caller rounds
+function screenToGrid(sx, sy) {
+  const rx = sx - gridCenterX();
+  const ry = sy - gridCenterY();
+  const dc = rx / (TILE_W / 2) + ry / (TILE_H / 2);
+  const dr = ry / (TILE_H / 2) - rx / (TILE_W / 2);
+  return {
+    col: Math.round(dc / 2 + CAMP_COL),
+    row: Math.round(dr / 2 + CAMP_ROW),
+  };
+}
+
+// Check if a grid cell is valid (within the 5x5 diamond)
+function isValidCell(col, row) {
+  return col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS;
+}
+
+// Check if cell is the camp center
+function isCampCell(col, row) {
+  return col === CAMP_COL && row === CAMP_ROW;
+}
+
+// Get ring number: 0 = camp, 1 = inner ring, 2 = outer ring
+function getCellRing(col, row) {
+  const dc = Math.abs(col - CAMP_COL);
+  const dr = Math.abs(row - CAMP_ROW);
+  return Math.max(dc, dr);
+}
+
+// Draw a diamond tile path at screen center (cx, cy)
+function diamondPath(cx, cy, inset) {
+  const hw = TILE_W / 2 - inset;
+  const hh = TILE_H / 2 - inset;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - hh);       // top
+  ctx.lineTo(cx + hw, cy);       // right
+  ctx.lineTo(cx, cy + hh);       // bottom
+  ctx.lineTo(cx - hw, cy);       // left
+  ctx.closePath();
+}
+
+// Point-in-diamond test
+function pointInDiamond(px, py, cx, cy) {
+  const dx = Math.abs(px - cx);
+  const dy = Math.abs(py - cy);
+  return (dx / (TILE_W / 2) + dy / (TILE_H / 2)) <= 1;
+}
 
 // --- Game state ---
 let gold = 100;
@@ -71,10 +135,6 @@ let spawnTimer = 0;
 let waveDelay = 0;
 let allWavesDone = false;
 
-// --- Grid offsets (computed dynamically) ---
-function gridOffsetX() { return (getW() - GRID_COLS * TILE_SIZE) / 2; }
-function gridOffsetY() { return (getH() - GRID_ROWS * TILE_SIZE) / 2 - 40; }
-
 // --- Defender types ---
 const DEFENDER_TYPES = [
   { id: 'archer',   name: '弓箭手', cost: 30,  color: '#4a7',  range: 120, damage: 8,  attackSpeed: 1.0, emoji: '🏹', desc: '远程攻击' },
@@ -85,8 +145,7 @@ const DEFENDER_TYPES = [
 
 // --- Enemy types per wave ---
 function getWaveEnemies(w) {
-  const base = 4 + w * 2;
-  return base;
+  return 4 + w * 2;
 }
 
 function createEnemy(w) {
@@ -101,17 +160,33 @@ function createEnemy(w) {
   if (w >= 3) typeIdx = Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0);
   if (w >= 4) typeIdx = Math.random() < 0.15 ? 3 : (Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0));
   const t = types[typeIdx];
-  // Spawn from a random edge
+
+  // Spawn from the 4 diamond-axis directions (top, right, bottom, left of diamond grid)
+  const cx = gridCenterX();
+  const cy = gridCenterY();
+  const margin = 80;
   const side = Math.floor(Math.random() * 4);
-  const gx = gridOffsetX(), gy = gridOffsetY();
-  const cx = gx + GRID_COLS * TILE_SIZE / 2;
-  const cy = gy + GRID_ROWS * TILE_SIZE / 2;
   let x, y;
-  const margin = 40;
-  if (side === 0) { x = gx - margin; y = gy + Math.random() * GRID_ROWS * TILE_SIZE; }
-  else if (side === 1) { x = gx + GRID_COLS * TILE_SIZE + margin; y = gy + Math.random() * GRID_ROWS * TILE_SIZE; }
-  else if (side === 2) { y = gy - margin; x = gx + Math.random() * GRID_COLS * TILE_SIZE; }
-  else { y = gy + GRID_ROWS * TILE_SIZE + margin; x = gx + Math.random() * GRID_COLS * TILE_SIZE; }
+  // Outer corners of the diamond grid
+  const topPos   = gridToScreen(0, 0);
+  const rightPos = gridToScreen(4, 0);
+  const botPos   = gridToScreen(4, 4);
+  const leftPos  = gridToScreen(0, 4);
+  const spread = 60;
+  if (side === 0) { // top
+    x = topPos.x + (Math.random() - 0.5) * spread;
+    y = topPos.y - margin;
+  } else if (side === 1) { // right
+    x = rightPos.x + margin;
+    y = rightPos.y + (Math.random() - 0.5) * spread;
+  } else if (side === 2) { // bottom
+    x = botPos.x + (Math.random() - 0.5) * spread;
+    y = botPos.y + margin;
+  } else { // left
+    x = leftPos.x - margin;
+    y = leftPos.y + (Math.random() - 0.5) * spread;
+  }
+
   return {
     x, y, hp: t.hp, maxHP: t.hp, speed: t.speed, color: t.color,
     reward: t.reward, size: t.size, emoji: t.emoji, name: t.name,
@@ -121,16 +196,8 @@ function createEnemy(w) {
 }
 
 // --- Input handling ---
-let touchStartX = 0, touchStartY = 0;
-
-function getEventPos(e) {
-  if (e.touches && e.touches.length > 0) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
-  return { x: e.clientX, y: e.clientY };
-}
-
 canvas.addEventListener('pointerdown', (e) => {
-  const pos = { x: e.clientX, y: e.clientY };
-  handleTap(pos);
+  handleTap({ x: e.clientX, y: e.clientY });
 });
 
 function handleTap(pos) {
@@ -138,7 +205,6 @@ function handleTap(pos) {
     resetGame();
     return;
   }
-  const gx = gridOffsetX(), gy = gridOffsetY();
 
   // Check speed buttons
   const speedBtns = getSpeedButtons();
@@ -170,22 +236,29 @@ function handleTap(pos) {
     }
   }
 
-  // Check grid tile click (place defender)
+  // Check grid tile click — find which diamond tile was tapped
   if (selectedDefender !== null) {
-    const col = Math.floor((pos.x - gx) / TILE_SIZE);
-    const row = Math.floor((pos.y - gy) / TILE_SIZE);
-    if (col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS) {
-      if (col === CAMP_COL && row === CAMP_ROW) return; // Can't place on camp
-      // Check if tile is free
-      const occupied = defenders.some(d => d.col === col && d.row === row);
+    // Test each tile's diamond for the tap point
+    let hitCol = -1, hitRow = -1;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (isCampCell(c, r)) continue;
+        const sc = gridToScreen(c, r);
+        if (pointInDiamond(pos.x, pos.y, sc.x, sc.y)) {
+          hitCol = c; hitRow = r;
+        }
+      }
+    }
+    if (hitCol >= 0 && hitRow >= 0) {
+      const occupied = defenders.some(d => d.col === hitCol && d.row === hitRow);
       if (!occupied) {
         const dt = DEFENDER_TYPES[selectedDefender];
         if (gold >= dt.cost) {
           gold -= dt.cost;
+          const sc = gridToScreen(hitCol, hitRow);
           defenders.push({
-            col, row,
-            x: gx + col * TILE_SIZE + TILE_SIZE / 2,
-            y: gy + row * TILE_SIZE + TILE_SIZE / 2,
+            col: hitCol, row: hitRow,
+            x: sc.x, y: sc.y,
             type: dt,
             attackTimer: 0,
             angle: 0,
@@ -197,7 +270,7 @@ function handleTap(pos) {
     }
   }
 
-  // Tap grid to deselect
+  // Tap elsewhere to deselect
   selectedDefender = null;
 }
 
@@ -264,8 +337,8 @@ function update(dt) {
   }
 
   // Move enemies toward camp center
-  const campX = gridOffsetX() + CAMP_COL * TILE_SIZE + TILE_SIZE / 2;
-  const campY = gridOffsetY() + CAMP_ROW * TILE_SIZE + TILE_SIZE / 2;
+  const campX = gridCenterX();
+  const campY = gridCenterY();
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.slowTimer > 0) { e.slowTimer -= dt; } else { e.slowFactor = 1; }
@@ -273,7 +346,6 @@ function update(dt) {
     const dy = campY - e.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 20) {
-      // Enemy reached camp
       campHP -= 10;
       spawnParticles(e.x, e.y, '#f44', 5);
       enemies.splice(i, 1);
@@ -289,7 +361,6 @@ function update(dt) {
   for (const d of defenders) {
     d.attackTimer -= dt;
     if (d.attackTimer <= 0) {
-      // Find nearest enemy in range
       let nearest = null, nearDist = Infinity;
       for (const e of enemies) {
         const dx = e.x - d.x, dy = e.y - d.y;
@@ -302,7 +373,6 @@ function update(dt) {
         d.attackTimer = 1 / d.type.attackSpeed;
         d.angle = Math.atan2(nearest.y - d.y, nearest.x - d.x);
         if (d.type.id === 'mage') {
-          // AOE attack
           for (const e of enemies) {
             const dx = e.x - nearest.x, dy = e.y - nearest.y;
             if (Math.sqrt(dx * dx + dy * dy) < 50) {
@@ -311,13 +381,11 @@ function update(dt) {
           }
           spawnParticles(nearest.x, nearest.y, '#66f', 8);
         } else if (d.type.id === 'healer') {
-          // Slow + damage
           nearest.hp -= d.type.damage;
           nearest.slowFactor = 0.4;
           nearest.slowTimer = 2.0;
           spawnParticles(nearest.x, nearest.y, '#aef', 4);
         } else {
-          // Normal projectile
           projectiles.push({
             x: d.x, y: d.y,
             tx: nearest.x, ty: nearest.y,
@@ -334,14 +402,12 @@ function update(dt) {
   // Move projectiles
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    // Track target if alive
     if (p.target && p.target.hp > 0) {
       p.tx = p.target.x; p.ty = p.target.y;
     }
     const dx = p.tx - p.x, dy = p.ty - p.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
     if (dist < 8) {
-      // Hit
       if (p.target && p.target.hp > 0) {
         p.target.hp -= p.damage;
         spawnParticles(p.tx, p.ty, p.color, 3);
@@ -425,18 +491,20 @@ function drawBackground(W, H) {
     ctx.stroke();
   }
 
-  // Decorative elements
-  drawCactus(gridOffsetX() - 50, gridOffsetY() + 60);
-  drawCactus(gridOffsetX() + GRID_COLS * TILE_SIZE + 30, gridOffsetY() + 150);
-  drawDeadTree(gridOffsetX() + GRID_COLS * TILE_SIZE + 25, gridOffsetY() - 20);
-  drawPineTree(gridOffsetX() - 45, gridOffsetY() + GRID_ROWS * TILE_SIZE - 30);
+  // Decorative elements relative to grid edges
+  const topPos   = gridToScreen(0, 0);
+  const rightPos = gridToScreen(4, 0);
+  const botPos   = gridToScreen(4, 4);
+  const leftPos  = gridToScreen(0, 4);
+  drawCactus(leftPos.x - 30, leftPos.y + 10);
+  drawCactus(rightPos.x + 25, rightPos.y + 15);
+  drawDeadTree(rightPos.x + 15, topPos.y - 20);
+  drawPineTree(leftPos.x - 25, topPos.y + 10);
 }
 
 function drawCactus(x, y) {
   ctx.fillStyle = '#5a4';
-  // Main body
   ctx.fillRect(x - 4, y - 30, 8, 35);
-  // Arms
   ctx.fillRect(x - 4, y - 20, -10, 6);
   ctx.fillRect(x - 14, y - 30, 6, 16);
   ctx.fillRect(x + 4, y - 15, 10, 6);
@@ -462,42 +530,65 @@ function drawPineTree(x, y) {
 }
 
 function drawGrid() {
-  const gx = gridOffsetX(), gy = gridOffsetY();
+  // Draw tiles from back to front (top to bottom in isometric order)
   for (let r = 0; r < GRID_ROWS; r++) {
     for (let c = 0; c < GRID_COLS; c++) {
-      const x = gx + c * TILE_SIZE;
-      const y = gy + r * TILE_SIZE;
-      if (c === CAMP_COL && r === CAMP_ROW) continue; // camp tile drawn separately
-      // Tile background
-      ctx.fillStyle = (r + c) % 2 === 0 ? 'rgba(210,180,120,0.5)' : 'rgba(200,170,110,0.5)';
-      ctx.fillRect(x + 1, y + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-      // Highlight if selected defender and placeable
+      if (isCampCell(c, r)) continue; // camp drawn separately
+      const sc = gridToScreen(c, r);
+      const ring = getCellRing(c, r);
+
+      // Tile fill — different shade per ring
+      if (ring === 1) {
+        ctx.fillStyle = 'rgba(220, 190, 130, 0.6)';
+      } else {
+        ctx.fillStyle = 'rgba(200, 170, 110, 0.5)';
+      }
+      // Alternate tint
+      if ((r + c) % 2 === 0) {
+        ctx.fillStyle = ring === 1 ? 'rgba(225, 195, 140, 0.6)' : 'rgba(210, 180, 120, 0.5)';
+      }
+
+      diamondPath(sc.x, sc.y, 1);
+      ctx.fill();
+
+      // Highlight placeable tiles when defender selected
       if (selectedDefender !== null) {
         const occupied = defenders.some(d => d.col === c && d.row === r);
         if (!occupied) {
           ctx.fillStyle = 'rgba(100, 255, 100, 0.2)';
-          ctx.fillRect(x + 1, y + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+          diamondPath(sc.x, sc.y, 1);
+          ctx.fill();
         }
       }
+
       // Tile border
-      ctx.strokeStyle = 'rgba(160,130,80,0.4)';
+      ctx.strokeStyle = 'rgba(160, 130, 80, 0.5)';
       ctx.lineWidth = 1;
-      ctx.strokeRect(x + 1, y + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+      diamondPath(sc.x, sc.y, 1);
+      ctx.stroke();
     }
   }
 }
 
 function drawCamp() {
-  const gx = gridOffsetX(), gy = gridOffsetY();
-  const cx = gx + CAMP_COL * TILE_SIZE + TILE_SIZE / 2;
-  const cy = gy + CAMP_ROW * TILE_SIZE + TILE_SIZE / 2;
+  const sc = gridToScreen(CAMP_COL, CAMP_ROW);
+  const cx = sc.x, cy = sc.y;
+
+  // Draw camp diamond tile
+  ctx.fillStyle = 'rgba(180, 140, 90, 0.7)';
+  diamondPath(cx, cy, 1);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(140, 100, 60, 0.6)';
+  ctx.lineWidth = 1.5;
+  diamondPath(cx, cy, 1);
+  ctx.stroke();
 
   // Tent body
   ctx.fillStyle = '#c96';
   ctx.beginPath();
   ctx.moveTo(cx, cy - 22);
-  ctx.lineTo(cx - 24, cy + 14);
-  ctx.lineTo(cx + 24, cy + 14);
+  ctx.lineTo(cx - 24, cy + 10);
+  ctx.lineTo(cx + 24, cy + 10);
   ctx.closePath();
   ctx.fill();
 
@@ -505,8 +596,8 @@ function drawCamp() {
   ctx.fillStyle = '#743';
   ctx.beginPath();
   ctx.moveTo(cx, cy - 5);
-  ctx.lineTo(cx - 8, cy + 14);
-  ctx.lineTo(cx + 8, cy + 14);
+  ctx.lineTo(cx - 8, cy + 10);
+  ctx.lineTo(cx + 8, cy + 10);
   ctx.closePath();
   ctx.fill();
 
@@ -537,7 +628,6 @@ function drawCamp() {
 }
 
 function drawDefenders() {
-  const gx = gridOffsetX(), gy = gridOffsetY();
   for (const d of defenders) {
     const x = d.x, y = d.y;
     // Body circle
@@ -549,13 +639,13 @@ function drawDefenders() {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Draw emoji
+    // Emoji
     ctx.font = '18px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(d.type.emoji, x, y + 1);
 
-    // Range indicator when selected
+    // Range indicator when a defender card is selected
     if (selectedDefender !== null) {
       ctx.strokeStyle = 'rgba(255,255,255,0.15)';
       ctx.lineWidth = 1;
@@ -689,7 +779,6 @@ function drawUI(W, H) {
     const canAfford = gold >= dt.cost;
     const isSelected = selectedDefender === i;
 
-    // Card background
     ctx.fillStyle = isSelected ? 'rgba(255,200,50,0.6)' : (canAfford ? 'rgba(255,255,255,0.15)' : 'rgba(100,100,100,0.2)');
     roundRect(ctx, c.x, c.y, c.w, c.h, 8);
     ctx.fill();
@@ -698,18 +787,15 @@ function drawUI(W, H) {
     roundRect(ctx, c.x, c.y, c.w, c.h, 8);
     ctx.stroke();
 
-    // Emoji
     ctx.font = '24px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(dt.emoji, c.x + c.w/2, c.y + 24);
 
-    // Name
     ctx.font = '11px sans-serif';
     ctx.fillStyle = canAfford ? '#fff' : '#888';
     ctx.fillText(dt.name, c.x + c.w/2, c.y + 48);
 
-    // Cost
     ctx.font = 'bold 12px sans-serif';
     ctx.fillStyle = canAfford ? '#fd0' : '#844';
     ctx.fillText('💰' + dt.cost, c.x + c.w/2, c.y + 66);
