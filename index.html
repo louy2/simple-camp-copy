@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>营地保卫战</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+canvas {
+  display: block;
+  margin: 0 auto;
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ==================== CAMP DEFENSE GAME ====================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- Responsive sizing ---
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+function getW() { return window.innerWidth; }
+function getH() { return window.innerHeight; }
+
+// --- Constants ---
+const TILE_W = 64;   // diamond tile width (horizontal span)
+const TILE_H = 38;   // diamond tile height (vertical span)
+const GRID_COLS = 5;
+const GRID_ROWS = 5;
+const TOTAL_WAVES = 5;
+const CAMP_COL = 2;
+const CAMP_ROW = 2;
+
+// --- Isometric coordinate helpers ---
+// Grid center on screen
+function gridCenterX() { return getW() / 2; }
+function gridCenterY() { return getH() / 2 - 50; }
+
+// Convert grid (col, row) to screen (x, y) — center of that diamond tile
+function gridToScreen(col, row) {
+  const dc = col - CAMP_COL;
+  const dr = row - CAMP_ROW;
+  return {
+    x: gridCenterX() + (dc - dr) * TILE_W / 2,
+    y: gridCenterY() + (dc + dr) * TILE_H / 2,
+  };
+}
+
+// Convert screen (x, y) to grid (col, row) — returns fractional, caller rounds
+function screenToGrid(sx, sy) {
+  const rx = sx - gridCenterX();
+  const ry = sy - gridCenterY();
+  const dc = rx / (TILE_W / 2) + ry / (TILE_H / 2);
+  const dr = ry / (TILE_H / 2) - rx / (TILE_W / 2);
+  return {
+    col: Math.round(dc / 2 + CAMP_COL),
+    row: Math.round(dr / 2 + CAMP_ROW),
+  };
+}
+
+// Check if a grid cell is valid (within the 5x5 diamond)
+function isValidCell(col, row) {
+  return col >= 0 && col < GRID_COLS && row >= 0 && row < GRID_ROWS;
+}
+
+// Check if cell is the camp center
+function isCampCell(col, row) {
+  return col === CAMP_COL && row === CAMP_ROW;
+}
+
+// Get ring number: 0 = camp, 1 = inner ring, 2 = outer ring
+function getCellRing(col, row) {
+  const dc = Math.abs(col - CAMP_COL);
+  const dr = Math.abs(row - CAMP_ROW);
+  return Math.max(dc, dr);
+}
+
+// Draw a diamond tile path at screen center (cx, cy)
+function diamondPath(cx, cy, inset) {
+  const hw = TILE_W / 2 - inset;
+  const hh = TILE_H / 2 - inset;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - hh);       // top
+  ctx.lineTo(cx + hw, cy);       // right
+  ctx.lineTo(cx, cy + hh);       // bottom
+  ctx.lineTo(cx - hw, cy);       // left
+  ctx.closePath();
+}
+
+// Point-in-diamond test
+function pointInDiamond(px, py, cx, cy) {
+  const dx = Math.abs(px - cx);
+  const dy = Math.abs(py - cy);
+  return (dx / (TILE_W / 2) + dy / (TILE_H / 2)) <= 1;
+}
+
+// --- Game state ---
+let gold = 100;
+let campHP = 100;
+let campMaxHP = 100;
+let wave = 0;
+let waveActive = false;
+let waveEnemiesSpawned = 0;
+let waveEnemiesTotal = 0;
+let gameSpeed = 1;
+let gameState = 'playing'; // 'playing', 'won', 'lost'
+let selectedDefender = null;
+let enemies = [];
+let defenders = [];
+let projectiles = [];
+let particles = [];
+let spawnTimer = 0;
+let waveDelay = 0;
+let allWavesDone = false;
+
+// --- Defender types ---
+const DEFENDER_TYPES = [
+  { id: 'archer',   name: '弓箭手', cost: 30,  color: '#4a7',  range: 120, damage: 8,  attackSpeed: 1.0, emoji: '🏹', desc: '远程攻击' },
+  { id: 'warrior',  name: '战士',   cost: 50,  color: '#c55',  range: 60,  damage: 15, attackSpeed: 0.8, emoji: '⚔️', desc: '近战高伤' },
+  { id: 'mage',     name: '法师',   cost: 60,  color: '#66f',  range: 100, damage: 12, attackSpeed: 0.7, emoji: '🔮', desc: '范围伤害' },
+  { id: 'healer',   name: '雪人',   cost: 40,  color: '#aef',  range: 90,  damage: 5,  attackSpeed: 0.5, emoji: '⛄', desc: '减速敌人' },
+];
+
+// --- Enemy types per wave ---
+function getWaveEnemies(w) {
+  return 4 + w * 2;
+}
+
+function createEnemy(w) {
+  const types = [
+    { name: '史莱姆', hp: 30 + w*10, speed: 0.6 + w*0.05, color: '#6c3', reward: 10, size: 14, emoji: '🟢' },
+    { name: '蝎子',   hp: 50 + w*15, speed: 0.5 + w*0.04, color: '#c93', reward: 15, size: 16, emoji: '🦂' },
+    { name: '骷髅',   hp: 80 + w*20, speed: 0.4 + w*0.03, color: '#ddd', reward: 20, size: 18, emoji: '💀' },
+    { name: 'Boss',   hp: 200 + w*50, speed: 0.3, color: '#f44', reward: 50, size: 24, emoji: '👹' },
+  ];
+  let typeIdx = 0;
+  if (w >= 2) typeIdx = Math.random() < 0.4 ? 1 : 0;
+  if (w >= 3) typeIdx = Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0);
+  if (w >= 4) typeIdx = Math.random() < 0.15 ? 3 : (Math.random() < 0.3 ? 2 : (Math.random() < 0.5 ? 1 : 0));
+  const t = types[typeIdx];
+
+  // Spawn from the 4 diamond-axis directions (top, right, bottom, left of diamond grid)
+  const cx = gridCenterX();
+  const cy = gridCenterY();
+  const margin = 80;
+  const side = Math.floor(Math.random() * 4);
+  let x, y;
+  // Outer corners of the diamond grid
+  const topPos   = gridToScreen(0, 0);
+  const rightPos = gridToScreen(4, 0);
+  const botPos   = gridToScreen(4, 4);
+  const leftPos  = gridToScreen(0, 4);
+  const spread = 60;
+  if (side === 0) { // top
+    x = topPos.x + (Math.random() - 0.5) * spread;
+    y = topPos.y - margin;
+  } else if (side === 1) { // right
+    x = rightPos.x + margin;
+    y = rightPos.y + (Math.random() - 0.5) * spread;
+  } else if (side === 2) { // bottom
+    x = botPos.x + (Math.random() - 0.5) * spread;
+    y = botPos.y + margin;
+  } else { // left
+    x = leftPos.x - margin;
+    y = leftPos.y + (Math.random() - 0.5) * spread;
+  }
+
+  return {
+    x, y, hp: t.hp, maxHP: t.hp, speed: t.speed, color: t.color,
+    reward: t.reward, size: t.size, emoji: t.emoji, name: t.name,
+    slowTimer: 0, slowFactor: 1,
+    targetX: cx, targetY: cy,
+  };
+}
+
+// --- Input handling ---
+canvas.addEventListener('pointerdown', (e) => {
+  handleTap({ x: e.clientX, y: e.clientY });
+});
+
+function handleTap(pos) {
+  if (gameState === 'won' || gameState === 'lost') {
+    resetGame();
+    return;
+  }
+
+  // Check speed buttons
+  const speedBtns = getSpeedButtons();
+  for (const btn of speedBtns) {
+    if (pos.x >= btn.x && pos.x <= btn.x + btn.w && pos.y >= btn.y && pos.y <= btn.y + btn.h) {
+      gameSpeed = btn.speed;
+      return;
+    }
+  }
+
+  // Check start wave button
+  if (!waveActive && wave < TOTAL_WAVES) {
+    const btnInfo = getStartWaveBtn();
+    if (pos.x >= btnInfo.x && pos.x <= btnInfo.x + btnInfo.w && pos.y >= btnInfo.y && pos.y <= btnInfo.y + btnInfo.h) {
+      startNextWave();
+      return;
+    }
+  }
+
+  // Check defender card selection
+  const cards = getDefenderCards();
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i];
+    if (pos.x >= c.x && pos.x <= c.x + c.w && pos.y >= c.y && pos.y <= c.y + c.h) {
+      if (gold >= DEFENDER_TYPES[i].cost) {
+        selectedDefender = (selectedDefender === i) ? null : i;
+      }
+      return;
+    }
+  }
+
+  // Check grid tile click — find which diamond tile was tapped
+  if (selectedDefender !== null) {
+    // Test each tile's diamond for the tap point
+    let hitCol = -1, hitRow = -1;
+    for (let r = 0; r < GRID_ROWS; r++) {
+      for (let c = 0; c < GRID_COLS; c++) {
+        if (isCampCell(c, r)) continue;
+        const sc = gridToScreen(c, r);
+        if (pointInDiamond(pos.x, pos.y, sc.x, sc.y)) {
+          hitCol = c; hitRow = r;
+        }
+      }
+    }
+    if (hitCol >= 0 && hitRow >= 0) {
+      const occupied = defenders.some(d => d.col === hitCol && d.row === hitRow);
+      if (!occupied) {
+        const dt = DEFENDER_TYPES[selectedDefender];
+        if (gold >= dt.cost) {
+          gold -= dt.cost;
+          const sc = gridToScreen(hitCol, hitRow);
+          defenders.push({
+            col: hitCol, row: hitRow,
+            x: sc.x, y: sc.y,
+            type: dt,
+            attackTimer: 0,
+            angle: 0,
+          });
+          selectedDefender = null;
+          saveGame();
+        }
+      }
+      return;
+    }
+  }
+
+  // Tap elsewhere to deselect
+  selectedDefender = null;
+}
+
+// --- UI Layout helpers ---
+function getSpeedButtons() {
+  const w = 44, h = 28, gap = 8;
+  const baseX = getW() - (w * 3 + gap * 2) - 10;
+  const baseY = 8;
+  return [
+    { x: baseX, y: baseY, w, h, speed: 1, label: 'x1' },
+    { x: baseX + w + gap, y: baseY, w, h, speed: 1.5, label: 'x1.5' },
+    { x: baseX + (w + gap) * 2, y: baseY, w, h, speed: 2, label: 'x2' },
+  ];
+}
+
+function getStartWaveBtn() {
+  const w = 120, h = 36;
+  return { x: (getW() - w) / 2, y: getH() - 140, w, h };
+}
+
+function getDefenderCards() {
+  const cardW = 64, cardH = 80, gap = 8;
+  const totalW = DEFENDER_TYPES.length * cardW + (DEFENDER_TYPES.length - 1) * gap;
+  const baseX = (getW() - totalW) / 2;
+  const baseY = getH() - 95;
+  return DEFENDER_TYPES.map((_, i) => ({
+    x: baseX + i * (cardW + gap),
+    y: baseY,
+    w: cardW,
+    h: cardH,
+  }));
+}
+
+// --- Game logic ---
+function startNextWave() {
+  wave++;
+  waveActive = true;
+  waveEnemiesSpawned = 0;
+  waveEnemiesTotal = getWaveEnemies(wave);
+  spawnTimer = 0;
+  saveGame();
+}
+
+function update(dt) {
+  if (gameState !== 'playing') return;
+  dt *= gameSpeed;
+
+  // Spawn enemies
+  if (waveActive && waveEnemiesSpawned < waveEnemiesTotal) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      enemies.push(createEnemy(wave));
+      waveEnemiesSpawned++;
+      spawnTimer = 1.0 + Math.random() * 0.5;
+    }
+  }
+
+  // Check wave end
+  if (waveActive && waveEnemiesSpawned >= waveEnemiesTotal && enemies.length === 0) {
+    waveActive = false;
+    if (wave >= TOTAL_WAVES) {
+      allWavesDone = true;
+      gameState = 'won';
+    }
+    saveGame();
+  }
+
+  // Move enemies toward camp center
+  const campX = gridCenterX();
+  const campY = gridCenterY();
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    if (e.slowTimer > 0) { e.slowTimer -= dt; } else { e.slowFactor = 1; }
+    const dx = campX - e.x;
+    const dy = campY - e.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 20) {
+      campHP -= 10;
+      spawnParticles(e.x, e.y, '#f44', 5);
+      enemies.splice(i, 1);
+      if (campHP <= 0) { campHP = 0; gameState = 'lost'; saveGame(); }
+      continue;
+    }
+    const spd = e.speed * e.slowFactor * 60 * dt;
+    e.x += (dx / dist) * spd;
+    e.y += (dy / dist) * spd;
+  }
+
+  // Defenders attack
+  for (const d of defenders) {
+    d.attackTimer -= dt;
+    if (d.attackTimer <= 0) {
+      let nearest = null, nearDist = Infinity;
+      for (const e of enemies) {
+        const dx = e.x - d.x, dy = e.y - d.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= d.type.range && dist < nearDist) {
+          nearest = e; nearDist = dist;
+        }
+      }
+      if (nearest) {
+        d.attackTimer = 1 / d.type.attackSpeed;
+        d.angle = Math.atan2(nearest.y - d.y, nearest.x - d.x);
+        if (d.type.id === 'mage') {
+          for (const e of enemies) {
+            const dx = e.x - nearest.x, dy = e.y - nearest.y;
+            if (Math.sqrt(dx * dx + dy * dy) < 50) {
+              e.hp -= d.type.damage;
+            }
+          }
+          spawnParticles(nearest.x, nearest.y, '#66f', 8);
+        } else if (d.type.id === 'healer') {
+          nearest.hp -= d.type.damage;
+          nearest.slowFactor = 0.4;
+          nearest.slowTimer = 2.0;
+          spawnParticles(nearest.x, nearest.y, '#aef', 4);
+        } else {
+          projectiles.push({
+            x: d.x, y: d.y,
+            tx: nearest.x, ty: nearest.y,
+            target: nearest,
+            speed: 250,
+            damage: d.type.damage,
+            color: d.type.color,
+          });
+        }
+      }
+    }
+  }
+
+  // Move projectiles
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    if (p.target && p.target.hp > 0) {
+      p.tx = p.target.x; p.ty = p.target.y;
+    }
+    const dx = p.tx - p.x, dy = p.ty - p.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 8) {
+      if (p.target && p.target.hp > 0) {
+        p.target.hp -= p.damage;
+        spawnParticles(p.tx, p.ty, p.color, 3);
+      }
+      projectiles.splice(i, 1);
+      continue;
+    }
+    const spd = p.speed * dt;
+    p.x += (dx / dist) * spd;
+    p.y += (dy / dist) * spd;
+  }
+
+  // Remove dead enemies + give gold
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i].hp <= 0) {
+      gold += enemies[i].reward;
+      spawnParticles(enemies[i].x, enemies[i].y, '#ff0', 6);
+      enemies.splice(i, 1);
+    }
+  }
+
+  // Update particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // Auto-save periodically
+  saveTimer += dt;
+  if (saveTimer >= SAVE_INTERVAL) {
+    saveTimer = 0;
+    saveGame();
+  }
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 100,
+      vy: (Math.random() - 0.5) * 100,
+      life: 0.4 + Math.random() * 0.3,
+      maxLife: 0.5,
+      color,
+    });
+  }
+}
+
+// --- Drawing ---
+function draw() {
+  const W = getW(), H = getH();
+  ctx.clearRect(0, 0, W, H);
+
+  drawBackground(W, H);
+  drawGrid();
+  drawCamp();
+  drawDefenders();
+  drawEnemies();
+  drawProjectiles();
+  drawParticles();
+  drawUI(W, H);
+
+  if (gameState === 'won') drawEndScreen('胜 利！', '#4f4', '营地安全了！');
+  if (gameState === 'lost') drawEndScreen('失 败', '#f44', '营地被摧毁了...');
+}
+
+function drawBackground(W, H) {
+  // Desert gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#e8c878');
+  grad.addColorStop(0.5, '#dbb860');
+  grad.addColorStop(1, '#c9a84c');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Sand wave pattern
+  ctx.strokeStyle = 'rgba(180, 140, 60, 0.3)';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < 8; i++) {
+    ctx.beginPath();
+    const yOff = 50 + i * 55;
+    for (let x = 0; x <= W; x += 5) {
+      const y = yOff + Math.sin(x * 0.015 + i * 1.5) * 12 + Math.sin(x * 0.008 + i) * 8;
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Decorative elements relative to grid edges
+  const topPos   = gridToScreen(0, 0);
+  const rightPos = gridToScreen(4, 0);
+  const botPos   = gridToScreen(4, 4);
+  const leftPos  = gridToScreen(0, 4);
+  drawCactus(leftPos.x - 30, leftPos.y + 10);
+  drawCactus(rightPos.x + 25, rightPos.y + 15);
+  drawDeadTree(rightPos.x + 15, topPos.y - 20);
+  drawPineTree(leftPos.x - 25, topPos.y + 10);
+}
+
+function drawCactus(x, y) {
+  ctx.fillStyle = '#5a4';
+  ctx.fillRect(x - 4, y - 30, 8, 35);
+  ctx.fillRect(x - 4, y - 20, -10, 6);
+  ctx.fillRect(x - 14, y - 30, 6, 16);
+  ctx.fillRect(x + 4, y - 15, 10, 6);
+  ctx.fillRect(x + 8, y - 25, 6, 16);
+}
+
+function drawDeadTree(x, y) {
+  ctx.strokeStyle = '#8b6';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x, y + 20); ctx.lineTo(x, y - 15); ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x - 12, y - 20); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x + 10, y - 25); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 8, y - 12); ctx.stroke();
+}
+
+function drawPineTree(x, y) {
+  ctx.fillStyle = '#396';
+  ctx.beginPath(); ctx.moveTo(x, y - 30); ctx.lineTo(x - 14, y); ctx.lineTo(x + 14, y); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x, y - 22); ctx.lineTo(x - 11, y - 5); ctx.lineTo(x + 11, y - 5); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#743';
+  ctx.fillRect(x - 3, y, 6, 8);
+}
+
+function drawGrid() {
+  // Draw tiles from back to front (top to bottom in isometric order)
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      if (isCampCell(c, r)) continue; // camp drawn separately
+      const sc = gridToScreen(c, r);
+      const ring = getCellRing(c, r);
+
+      // Tile fill — different shade per ring
+      if (ring === 1) {
+        ctx.fillStyle = 'rgba(220, 190, 130, 0.6)';
+      } else {
+        ctx.fillStyle = 'rgba(200, 170, 110, 0.5)';
+      }
+      // Alternate tint
+      if ((r + c) % 2 === 0) {
+        ctx.fillStyle = ring === 1 ? 'rgba(225, 195, 140, 0.6)' : 'rgba(210, 180, 120, 0.5)';
+      }
+
+      diamondPath(sc.x, sc.y, 1);
+      ctx.fill();
+
+      // Highlight placeable tiles when defender selected
+      if (selectedDefender !== null) {
+        const occupied = defenders.some(d => d.col === c && d.row === r);
+        if (!occupied) {
+          ctx.fillStyle = 'rgba(100, 255, 100, 0.2)';
+          diamondPath(sc.x, sc.y, 1);
+          ctx.fill();
+        }
+      }
+
+      // Tile border
+      ctx.strokeStyle = 'rgba(160, 130, 80, 0.5)';
+      ctx.lineWidth = 1;
+      diamondPath(sc.x, sc.y, 1);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawCamp() {
+  const sc = gridToScreen(CAMP_COL, CAMP_ROW);
+  const cx = sc.x, cy = sc.y;
+
+  // Draw camp diamond tile
+  ctx.fillStyle = 'rgba(180, 140, 90, 0.7)';
+  diamondPath(cx, cy, 1);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(140, 100, 60, 0.6)';
+  ctx.lineWidth = 1.5;
+  diamondPath(cx, cy, 1);
+  ctx.stroke();
+
+  // Tent body
+  ctx.fillStyle = '#c96';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 22);
+  ctx.lineTo(cx - 24, cy + 10);
+  ctx.lineTo(cx + 24, cy + 10);
+  ctx.closePath();
+  ctx.fill();
+
+  // Tent opening
+  ctx.fillStyle = '#743';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 5);
+  ctx.lineTo(cx - 8, cy + 10);
+  ctx.lineTo(cx + 8, cy + 10);
+  ctx.closePath();
+  ctx.fill();
+
+  // Tent pole
+  ctx.strokeStyle = '#965';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(cx, cy - 22); ctx.lineTo(cx, cy - 28); ctx.stroke();
+
+  // Flag
+  ctx.fillStyle = '#e44';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 28);
+  ctx.lineTo(cx + 10, cy - 25);
+  ctx.lineTo(cx, cy - 22);
+  ctx.closePath();
+  ctx.fill();
+
+  // HP bar
+  const barW = 40, barH = 5;
+  const hpRatio = campHP / campMaxHP;
+  ctx.fillStyle = '#400';
+  ctx.fillRect(cx - barW/2, cy - 34, barW, barH);
+  ctx.fillStyle = hpRatio > 0.5 ? '#4c4' : (hpRatio > 0.25 ? '#cc4' : '#c44');
+  ctx.fillRect(cx - barW/2, cy - 34, barW * hpRatio, barH);
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(cx - barW/2, cy - 34, barW, barH);
+}
+
+function drawDefenders() {
+  for (const d of defenders) {
+    const x = d.x, y = d.y;
+    // Body circle
+    ctx.fillStyle = d.type.color;
+    ctx.beginPath();
+    ctx.arc(x, y, 16, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Emoji
+    ctx.font = '18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(d.type.emoji, x, y + 1);
+
+    // Range indicator when a defender card is selected
+    if (selectedDefender !== null) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, d.type.range, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const x = e.x, y = e.y;
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath();
+    ctx.ellipse(x, y + e.size * 0.6, e.size * 0.7, e.size * 0.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = e.color;
+    ctx.beginPath();
+    ctx.arc(x, y, e.size, 0, Math.PI * 2);
+    ctx.fill();
+    if (e.slowFactor < 1) {
+      ctx.strokeStyle = '#aef';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Emoji
+    ctx.font = (e.size + 4) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(e.emoji, x, y + 1);
+
+    // HP bar
+    const barW = e.size * 1.6, barH = 3;
+    const hpR = e.hp / e.maxHP;
+    ctx.fillStyle = '#400';
+    ctx.fillRect(x - barW/2, y - e.size - 6, barW, barH);
+    ctx.fillStyle = hpR > 0.5 ? '#4c4' : '#c44';
+    ctx.fillRect(x - barW/2, y - e.size - 6, barW * hpR, barH);
+  }
+}
+
+function drawProjectiles() {
+  for (const p of projectiles) {
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(p.x - 1, p.y - 1, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3 * alpha, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawUI(W, H) {
+  // Top bar background
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(0, 0, W, 40);
+
+  // Gold
+  ctx.font = 'bold 16px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fd0';
+  ctx.fillText('💰 ' + gold, 12, 20);
+
+  // Wave info
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 15px sans-serif';
+  const waveText = wave === 0 ? '准备开始' : '波数 ' + wave + '/' + TOTAL_WAVES;
+  ctx.fillText(waveText, W / 2, 20);
+
+  // Speed buttons
+  const speedBtns = getSpeedButtons();
+  for (const btn of speedBtns) {
+    const isActive = Math.abs(gameSpeed - btn.speed) < 0.01;
+    ctx.fillStyle = isActive ? 'rgba(255,200,50,0.7)' : 'rgba(255,255,255,0.2)';
+    roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 6);
+    ctx.fill();
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = isActive ? '#000' : '#fff';
+    ctx.fillText(btn.label, btn.x + btn.w/2, btn.y + btn.h/2);
+  }
+
+  // Start wave button
+  if (!waveActive && wave < TOTAL_WAVES && gameState === 'playing') {
+    const btn = getStartWaveBtn();
+    ctx.fillStyle = 'rgba(50,200,50,0.7)';
+    roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 8);
+    ctx.stroke();
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fff';
+    ctx.fillText('开始第 ' + (wave + 1) + ' 波', btn.x + btn.w/2, btn.y + btn.h/2);
+  }
+
+  // Bottom bar
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, H - 100, W, 100);
+
+  // Defender cards
+  const cards = getDefenderCards();
+  for (let i = 0; i < DEFENDER_TYPES.length; i++) {
+    const dt = DEFENDER_TYPES[i];
+    const c = cards[i];
+    const canAfford = gold >= dt.cost;
+    const isSelected = selectedDefender === i;
+
+    ctx.fillStyle = isSelected ? 'rgba(255,200,50,0.6)' : (canAfford ? 'rgba(255,255,255,0.15)' : 'rgba(100,100,100,0.2)');
+    roundRect(ctx, c.x, c.y, c.w, c.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = isSelected ? '#fd0' : (canAfford ? 'rgba(255,255,255,0.3)' : 'rgba(100,100,100,0.3)');
+    ctx.lineWidth = isSelected ? 2 : 1;
+    roundRect(ctx, c.x, c.y, c.w, c.h, 8);
+    ctx.stroke();
+
+    ctx.font = '24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(dt.emoji, c.x + c.w/2, c.y + 24);
+
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = canAfford ? '#fff' : '#888';
+    ctx.fillText(dt.name, c.x + c.w/2, c.y + 48);
+
+    ctx.font = 'bold 12px sans-serif';
+    ctx.fillStyle = canAfford ? '#fd0' : '#844';
+    ctx.fillText('💰' + dt.cost, c.x + c.w/2, c.y + 66);
+  }
+}
+
+function drawEndScreen(title, color, subtitle) {
+  const W = getW(), H = getH();
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.font = 'bold 48px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.fillText(title, W/2, H/2 - 30);
+
+  ctx.font = '20px sans-serif';
+  ctx.fillStyle = '#ddd';
+  ctx.fillText(subtitle, W/2, H/2 + 20);
+
+  ctx.font = '16px sans-serif';
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('点击屏幕重新开始', W/2, H/2 + 60);
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// --- Save / Load (localStorage) ---
+const SAVE_KEY = 'campDefenseSave';
+const SAVE_INTERVAL = 3; // auto-save every 3 seconds
+let saveTimer = 0;
+
+function saveGame() {
+  const data = {
+    gold, campHP, wave, waveActive,
+    waveEnemiesSpawned, waveEnemiesTotal, spawnTimer,
+    gameSpeed, gameState, allWavesDone,
+    defenders: defenders.map(d => ({
+      col: d.col, row: d.row,
+      typeId: d.type.id,
+      attackTimer: d.attackTimer,
+      angle: d.angle,
+    })),
+    enemies: enemies.map(e => ({
+      x: e.x, y: e.y, hp: e.hp, maxHP: e.maxHP,
+      speed: e.speed, color: e.color, reward: e.reward,
+      size: e.size, emoji: e.emoji, name: e.name,
+      slowTimer: e.slowTimer, slowFactor: e.slowFactor,
+      targetX: e.targetX, targetY: e.targetY,
+    })),
+  };
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch(e) {}
+}
+
+function loadGame() {
+  let raw;
+  try { raw = localStorage.getItem(SAVE_KEY); } catch(e) { return false; }
+  if (!raw) return false;
+  let data;
+  try { data = JSON.parse(raw); } catch(e) { return false; }
+
+  gold = data.gold;
+  campHP = data.campHP;
+  wave = data.wave;
+  waveActive = data.waveActive;
+  waveEnemiesSpawned = data.waveEnemiesSpawned;
+  waveEnemiesTotal = data.waveEnemiesTotal;
+  spawnTimer = data.spawnTimer || 0;
+  gameSpeed = data.gameSpeed;
+  gameState = data.gameState;
+  allWavesDone = data.allWavesDone;
+  selectedDefender = null;
+  projectiles = [];
+  particles = [];
+
+  // Restore defenders with type reference
+  defenders = (data.defenders || []).map(d => {
+    const dt = DEFENDER_TYPES.find(t => t.id === d.typeId);
+    if (!dt) return null;
+    const sc = gridToScreen(d.col, d.row);
+    return {
+      col: d.col, row: d.row,
+      x: sc.x, y: sc.y,
+      type: dt,
+      attackTimer: d.attackTimer || 0,
+      angle: d.angle || 0,
+    };
+  }).filter(Boolean);
+
+  // Restore enemies
+  enemies = (data.enemies || []).map(e => ({
+    x: e.x, y: e.y, hp: e.hp, maxHP: e.maxHP,
+    speed: e.speed, color: e.color, reward: e.reward,
+    size: e.size, emoji: e.emoji, name: e.name,
+    slowTimer: e.slowTimer || 0, slowFactor: e.slowFactor || 1,
+    targetX: e.targetX, targetY: e.targetY,
+  }));
+
+  return true;
+}
+
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch(e) {}
+}
+
+function resetGame() {
+  gold = 100;
+  campHP = 100;
+  wave = 0;
+  waveActive = false;
+  gameSpeed = 1;
+  gameState = 'playing';
+  selectedDefender = null;
+  enemies = [];
+  defenders = [];
+  projectiles = [];
+  particles = [];
+  allWavesDone = false;
+  clearSave();
+}
+
+// --- Auto-load save on startup ---
+loadGame();
+
+// --- Main loop ---
+let lastTime = 0;
+function gameLoop(time) {
+  const dt = Math.min((time - lastTime) / 1000, 0.05);
+  lastTime = time;
+  update(dt);
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame((time) => { lastTime = time; gameLoop(time); });
+</script>
+</body>
+</html>
